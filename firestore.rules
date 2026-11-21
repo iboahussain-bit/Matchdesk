@@ -1,0 +1,227 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Reusable hardened primitives
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function matchExists(matchId) {
+      return exists(/databases/$(database)/documents/matches/$(matchId));
+    }
+
+    function isMatchOwner(matchId) {
+      return isSignedIn() && get(/databases/$(database)/documents/matches/$(matchId)).data.ownerId == request.auth.uid;
+    }
+
+    function isValidTeamConfig(team) {
+      return team is map
+        && team.keys().hasAll(['name', 'shortCode', 'color'])
+        && team.keys().hasOnly(['name', 'shortCode', 'color'])
+        && team.name is string && team.name.size() >= 1 && team.name.size() <= 80
+        && team.shortCode is string && team.shortCode.size() >= 1 && team.shortCode.size() <= 6
+        && team.color is string && team.color.size() == 7 && team.color.matches('^#[0-9a-fA-F]{6}$');
+    }
+
+    function isValidPeriod(period) {
+      return period in [
+        'PRE_MATCH',
+        'FIRST_HALF',
+        'HALF_TIME',
+        'SECOND_HALF',
+        'EXTRA_TIME_1',
+        'EXTRA_TIME_2',
+        'FULL_TIME'
+      ];
+    }
+
+    function isValidClockState(clock) {
+      return clock is map
+        && clock.keys().hasAll(['elapsedSeconds', 'isRunning', 'period', 'addedMinutes', 'lastTickAt'])
+        && clock.keys().hasOnly(['elapsedSeconds', 'isRunning', 'period', 'addedMinutes', 'lastTickAt'])
+        && clock.elapsedSeconds is int && clock.elapsedSeconds >= 0 && clock.elapsedSeconds <= 18000
+        && clock.isRunning is bool
+        && clock.period is string && clock.period.size() <= 24 && isValidPeriod(clock.period)
+        && clock.addedMinutes is int && clock.addedMinutes >= 0 && clock.addedMinutes <= 45
+        && (clock.lastTickAt == null || (clock.lastTickAt is int && clock.lastTickAt >= 0));
+    }
+
+    function isValidMatch(data) {
+      return data.keys().hasAll([
+          'ownerId', 'title', 'competition', 'venue', 'matchDate',
+          'halfDurationMinutes', 'homeTeam', 'awayTeam', 'clock',
+          'homeScore', 'awayScore', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'title', 'competition', 'venue', 'matchDate',
+          'halfDurationMinutes', 'homeTeam', 'awayTeam', 'clock',
+          'homeScore', 'awayScore', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.title is string && data.title.size() >= 1 && data.title.size() <= 120
+        && data.competition is string && data.competition.size() <= 120
+        && data.venue is string && data.venue.size() <= 120
+        && data.matchDate is string && data.matchDate.size() == 10 && data.matchDate.matches('^\\d{4}-\\d{2}-\\d{2}$')
+        && data.halfDurationMinutes is int && data.halfDurationMinutes >= 1 && data.halfDurationMinutes <= 90
+        && isValidTeamConfig(data.homeTeam)
+        && isValidTeamConfig(data.awayTeam)
+        && isValidClockState(data.clock)
+        && data.homeScore is int && data.homeScore >= 0 && data.homeScore <= 999
+        && data.awayScore is int && data.awayScore >= 0 && data.awayScore <= 999
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPlayer(data) {
+      return data.keys().hasAll([
+          'ownerId', 'team', 'number', 'name', 'position',
+          'isStarter', 'status', 'createdAt', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'team', 'number', 'name', 'position',
+          'isStarter', 'status', 'createdAt', 'updatedAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.team is string && data.team.size() <= 10 && data.team in ['HOME', 'AWAY']
+        && data.number is int && data.number >= 1 && data.number <= 99
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.position is string && data.position.size() <= 6 && data.position in ['GK', 'DEF', 'MID', 'FWD']
+        && data.isStarter is bool
+        && data.status is string && data.status.size() <= 16 && data.status in ['ON_PITCH', 'BENCH', 'SUBBED_OFF']
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidMatchEvent(data) {
+      return data.keys().hasAll([
+          'ownerId', 'type', 'team', 'minute', 'addedMinute',
+          'clockDisplay', 'period', 'playerId', 'playerName',
+          'secondaryPlayerId', 'secondaryPlayerName', 'goalType',
+          'note', 'clientCreatedIso', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'ownerId', 'type', 'team', 'minute', 'addedMinute',
+          'clockDisplay', 'period', 'playerId', 'playerName',
+          'secondaryPlayerId', 'secondaryPlayerName', 'goalType',
+          'note', 'clientCreatedIso', 'createdAt'
+        ])
+        && isValidId(data.ownerId)
+        && data.ownerId == request.auth.uid
+        && data.type is string && data.type.size() <= 20 && data.type in [
+          'GOAL', 'YELLOW_CARD', 'RED_CARD', 'SUBSTITUTION',
+          'KICKOFF', 'HALF_TIME', 'FULL_TIME', 'NOTE'
+        ]
+        && data.team is string && data.team.size() <= 10 && data.team in ['HOME', 'AWAY', 'MATCH']
+        && data.minute is int && data.minute >= 0 && data.minute <= 180
+        && data.addedMinute is int && data.addedMinute >= 0 && data.addedMinute <= 45
+        && data.clockDisplay is string && data.clockDisplay.size() >= 1 && data.clockDisplay.size() <= 16
+        && data.period is string && data.period.size() <= 24 && isValidPeriod(data.period)
+        && data.playerId is string && data.playerId.size() <= 128
+        && data.playerName is string && data.playerName.size() <= 80
+        && data.secondaryPlayerId is string && data.secondaryPlayerId.size() <= 128
+        && data.secondaryPlayerName is string && data.secondaryPlayerName.size() <= 80
+        && data.goalType is string && data.goalType.size() <= 32
+        && data.note is string && data.note.size() <= 200
+        && data.clientCreatedIso is string && data.clientCreatedIso.size() >= 1 && data.clientCreatedIso.size() <= 40
+        && data.createdAt is timestamp;
+    }
+
+    match /matches/{matchId} {
+      allow get: if isSignedIn() && isValidId(matchId) && existing().ownerId == request.auth.uid;
+      allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+      allow create: if isVerifiedUser()
+        && isValidId(matchId)
+        && isValidMatch(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerifiedUser()
+        && isValidId(matchId)
+        && isValidMatch(incoming())
+        && existing().ownerId == request.auth.uid
+        && incoming().ownerId == existing().ownerId
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'title', 'competition', 'venue', 'matchDate',
+            'halfDurationMinutes', 'homeTeam', 'awayTeam', 'updatedAt'
+          ])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['clock', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['homeScore', 'awayScore', 'updatedAt'])
+          || incoming().diff(existing()).affectedKeys().hasOnly(['clock', 'homeScore', 'awayScore', 'updatedAt'])
+        );
+      allow delete: if isVerifiedUser() && isValidId(matchId) && existing().ownerId == request.auth.uid;
+
+      match /players/{playerId} {
+        allow get: if isSignedIn() && isValidId(matchId) && isValidId(playerId) && existing().ownerId == request.auth.uid;
+        allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+        allow create: if isVerifiedUser()
+          && isValidId(matchId)
+          && isValidId(playerId)
+          && isValidPlayer(incoming())
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time
+          && matchExists(matchId)
+          && isMatchOwner(matchId);
+        allow update: if isVerifiedUser()
+          && isValidId(matchId)
+          && isValidId(playerId)
+          && isValidPlayer(incoming())
+          && existing().ownerId == request.auth.uid
+          && incoming().ownerId == existing().ownerId
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && isMatchOwner(matchId)
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'status', 'isStarter', 'number', 'name', 'position', 'updatedAt'
+          ]);
+        allow delete: if isVerifiedUser()
+          && isValidId(matchId)
+          && isValidId(playerId)
+          && existing().ownerId == request.auth.uid
+          && isMatchOwner(matchId);
+      }
+
+      match /events/{eventId} {
+        allow get: if isSignedIn() && isValidId(matchId) && isValidId(eventId) && existing().ownerId == request.auth.uid;
+        allow list: if isSignedIn() && existing().ownerId == request.auth.uid;
+        allow create: if isVerifiedUser()
+          && isValidId(matchId)
+          && isValidId(eventId)
+          && isValidMatchEvent(incoming())
+          && incoming().createdAt == request.time
+          && matchExists(matchId)
+          && isMatchOwner(matchId);
+        allow update: if false;
+        allow delete: if isVerifiedUser()
+          && isValidId(matchId)
+          && isValidId(eventId)
+          && existing().ownerId == request.auth.uid
+          && isMatchOwner(matchId);
+      }
+    }
+  }
+}

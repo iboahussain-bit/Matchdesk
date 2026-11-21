@@ -1,0 +1,6 @@
+{
+  "name": "MatchDesk",
+  "description": "Live match management console with game clock, lineups, event logging, and real-time cloud database sync.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
